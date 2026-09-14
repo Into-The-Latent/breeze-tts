@@ -1,3 +1,12 @@
+> **Into The Latent fork.** This fork makes the upstream code pip-installable and
+> usable inside an existing ComfyUI environment:
+> - the `models` package is renamed to `breeze_models` (no collision with ComfyUI's own `models`)
+> - transformers 5.x is supported alongside 4.57.x (tested: torch 2.11 + transformers 5.15)
+> - dependency pins are loosened; install with `pip install git+https://github.com/Into-The-Latent/breeze-tts@feature/comfyui`
+> - `qwen-tts` pins `transformers==4.57.3`; install it with `pip install qwen-tts==0.1.1 --no-deps librosa einops onnxruntime`
+>
+> Everything else is upstream: https://github.com/breezeblue-ai/breeze-tts
+
 <div align="center">
   <a href="https://breezeblue.ai/"><img src="assets/breezeblue-logo.png" alt="BreezeBlue" width="35%"></a>
   <br><br>

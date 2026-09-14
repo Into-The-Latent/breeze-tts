@@ -988,7 +988,10 @@ class BreezeForConditionalGeneration(BreezePreTrainedModel, BreezeGenerationMixi
                 text_encoder_attn_implementation
             )
             # Skip random weight initialization since we'll load pretrained weights later
-            from transformers.modeling_utils import no_init_weights
+            try:  # transformers >= 5
+                from transformers.initialization import no_init_weights
+            except ImportError:  # transformers 4.x
+                from transformers.modeling_utils import no_init_weights
 
             with no_init_weights():
                 self.text_encoder = AutoModel.from_config(

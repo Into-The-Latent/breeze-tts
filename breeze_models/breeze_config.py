@@ -13,11 +13,13 @@ class T5GemmaEncoderWrapper(T5GemmaEncoder):
     config_class = T5GemmaModuleConfig
 
 
-# register T5GemmaModuleConfig
-AutoConfig.register("t5_gemma_module", T5GemmaModuleConfig)
-AutoModel.register(T5GemmaModuleConfig, T5GemmaEncoderWrapper)
-AutoConfig.register("t5gemma2_text", T5Gemma2TextConfig)
-AutoModel.register(T5Gemma2TextConfig, T5Gemma2TextEncoder)
+# Register the text-encoder configs and models. transformers >= 5 ships
+# native "t5_gemma_module" and "t5gemma2_text" entries, so allow overriding
+# them: the local shim is what the released checkpoint was validated against.
+AutoConfig.register("t5_gemma_module", T5GemmaModuleConfig, exist_ok=True)
+AutoModel.register(T5GemmaModuleConfig, T5GemmaEncoderWrapper, exist_ok=True)
+AutoConfig.register("t5gemma2_text", T5Gemma2TextConfig, exist_ok=True)
+AutoModel.register(T5Gemma2TextConfig, T5Gemma2TextEncoder, exist_ok=True)
 
 
 # Update BreezeConfig to handle text_encoder_config properly

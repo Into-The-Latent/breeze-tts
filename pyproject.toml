@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breeze-tts"
+version = "2.0.0.post1"
+description = "Breeze TTS 2 inference (Into The Latent fork: pip-installable, transformers 5 compatible, ComfyUI-safe package name)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "torch>=2.9",
+    "torchaudio>=2.9",
+    "transformers>=4.57,<6",
+    "numpy>=2.0",
+    "soundfile>=0.13",
+]
+
+[project.optional-dependencies]
+# qwen-tts hard-pins transformers==4.57.3 and accelerate==1.12.0. Install it
+# separately with `pip install qwen-tts==0.1.1 --no-deps` (plus librosa, einops,
+# onnxruntime) to avoid downgrading an existing environment.
+qwen = ["qwen-tts==0.1.1"]
+api = ["fastapi>=0.115", "uvicorn>=0.30", "python-multipart>=0.0.18"]
+dev = ["pytest>=8.0", "ruff>=0.12"]
+
+[project.urls]
+Homepage = "https://github.com/Into-The-Latent/breeze-tts"
+Upstream = "https://github.com/breezeblue-ai/breeze-tts"
+
+[tool.setuptools.packages.find]
+include = ["breeze_models*", "breeze_infer*"]
+
+[tool.setuptools.package-data]
+breeze_models = ["*.json"]
