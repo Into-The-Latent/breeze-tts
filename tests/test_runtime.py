@@ -8,7 +8,7 @@ from breeze_infer.runtime import load_runtime
 def test_load_runtime_disables_inapplicable_mistral_regex_fix(tmp_path) -> None:
     (tmp_path / "audio_tokenizer").mkdir()
     model = MagicMock()
-    audio_tokenizer = object()
+    audio_tokenizer = MagicMock()
 
     with (
         patch(
@@ -22,7 +22,7 @@ def test_load_runtime_disables_inapplicable_mistral_regex_fix(tmp_path) -> None:
         patch(
             "breeze_models.qwen_tokenizer.Qwen3TTSTokenizer.from_pretrained",
             return_value=audio_tokenizer,
-        ),
+        ) as load_audio_tokenizer,
     ):
         load_runtime(tmp_path, device="cpu", attn_implementation="eager")
 
@@ -30,3 +30,8 @@ def test_load_runtime_disables_inapplicable_mistral_regex_fix(tmp_path) -> None:
         tmp_path,
         fix_mistral_regex=False,
     )
+    # The audio tokenizer is loaded without device_map (that would require `accelerate`) and moved
+    # afterwards, like the main model.
+    load_audio_tokenizer.assert_called_once_with(str(tmp_path / "audio_tokenizer"))
+    audio_tokenizer.model.to.assert_called_once_with("cpu")
+    assert audio_tokenizer.device is audio_tokenizer.model.device
