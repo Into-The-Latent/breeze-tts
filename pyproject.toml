@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breeze-tts"
-version = "2.0.0.post3"
+version = "2.0.0.post4"
 description = "Breeze TTS 2 inference (Into The Latent fork: pip-installable, transformers 5 compatible, ComfyUI-safe package name)"
 readme = "README.md"
 requires-python = ">=3.10"
