@@ -15,7 +15,8 @@ import torch
 
 @torch.no_grad()
 def reinit_computed_buffers(root) -> list[str]:
-    """Recompute every computed buffer under ``root``. Returns the qualified names touched."""
+    """Recompute the computed buffers this module knows about (the ones listed above) under
+    ``root``. Returns the qualified names touched."""
     touched: list[str] = []
     if not isinstance(root, torch.nn.Module):  # test doubles
         return touched
@@ -34,7 +35,9 @@ def reinit_computed_buffers(root) -> list[str]:
             module.attention_scaling = scaling
             original = getattr(module, "original_inv_freq", None)
             if isinstance(original, torch.Tensor) and original.data_ptr() != inv_freq.data_ptr():
-                original.copy_(value.to(original.dtype))
+                # On 5.x this is a plain attribute the loader leaves on the meta device; copy_ into
+                # meta storage is a silent no-op, so rebind it to a real tensor instead.
+                module.original_inv_freq = value.to(device=inv_freq.device, dtype=original.dtype)
             touched.append(f"{name}.inv_freq")
         # T5Gemma 2 shim: one inv_freq buffer per layer type.
         compute_inv_freq = getattr(module, "_compute_inv_freq", None)

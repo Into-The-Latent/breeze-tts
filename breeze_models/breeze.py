@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
+from functools import lru_cache
 
 from dataclasses import dataclass
 
@@ -34,7 +36,7 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
 )
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from .rope_compat import resolve_rope_init_fn
+from .rope_compat import compute_default_rope_parameters, resolve_rope_init_fn
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.models.auto import AutoModel
 from transformers.processing_utils import Unpack
@@ -140,6 +142,12 @@ class BreezeRMSNorm(nn.Module):
 
 class BreezeRotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
+
+    # transformers >= 5 re-initialises any module whose class name contains "RotaryEmbedding" and
+    # that carries `original_inv_freq` by calling `module.compute_default_rope_parameters(config)`
+    # when rope_type == "default" (ROPE_INIT_FUNCTIONS lost that entry), so the hook must exist or
+    # `_init_weights` raises AttributeError for every config without rope_scaling.
+    compute_default_rope_parameters = staticmethod(compute_default_rope_parameters)
 
     def __init__(self, config: BreezeConfig, device=None):
         super().__init__()
@@ -454,6 +462,11 @@ class BreezePreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         super()._init_weights(module)
         if isinstance(module, BreezeCodebooksHead):
+            # transformers >= 5 still calls this hook for modules whose weights it has already
+            # loaded; `_is_hf_initialized` marks those, and writing them would discard the
+            # checkpoint (same guard as the T5Gemma 2 shim).
+            if getattr(module.weight, "_is_hf_initialized", False):
+                return
             num_codebooks = module.num_codebooks
             for i in range(num_codebooks - 1):
                 module.weight.data[i].normal_(
@@ -633,6 +646,15 @@ class BreezeCodebooksHead(nn.Module):
         return f"weight_shape={list(self.weight.shape)}, num_codebooks={self.num_codebooks}"
 
 
+@lru_cache(maxsize=None)
+def _declares_cache_position(func) -> bool:
+    """Does this ``prepare_inputs_for_generation`` still take ``cache_position``? (4.x yes, 5 no).
+
+    Cached: the depth decoder calls it once per generated codebook token.
+    """
+    return "cache_position" in inspect.signature(func).parameters
+
+
 @auto_docstring(
     custom_intro="""
     The BreezeDepthDecoder Model transformer, with a [`BreezeCodebooksHead`] on top,
@@ -754,21 +776,45 @@ class BreezeDepthDecoderForCausalLM(BreezePreTrainedModel, GenerationMixin):
         cache_position: torch.LongTensor | None = None,
         **kwargs,
     ):
-        model_inputs = super().prepare_inputs_for_generation(
-            input_ids,
-            past_key_values,
-            attention_mask,
-            inputs_embeds,
-            cache_position,
+        # Everything goes by keyword: transformers 5 reordered this signature (it inserted
+        # `next_sequence_length` in second place) and dropped `cache_position`, which it forwards
+        # verbatim from **kwargs instead. Only hand it over when the base still declares it.
+        base = super().prepare_inputs_for_generation
+        if _declares_cache_position(base.__func__):  # transformers 4.x
+            kwargs["cache_position"] = cache_position
+        elif cache_position is not None:
+            kwargs.setdefault("cache_position", cache_position)
+        model_inputs = base(
+            input_ids=input_ids,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
             **kwargs,
         )
 
-        is_first_generation_step = model_inputs["cache_position"][0] == 0
+        # The depth decoder indexes its token embeddings and its codebook head with cache_position,
+        # so it must always get one; transformers 5's generate no longer creates it.
+        cache_position = model_inputs.get("cache_position")
+        if cache_position is None:
+            past_seen_tokens = (
+                past_key_values.get_seq_length() if past_key_values is not None else 0
+            )
+            seq_source = model_inputs.get("inputs_embeds")
+            if seq_source is None:
+                seq_source = model_inputs.get("input_ids")
+            cache_position = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + seq_source.shape[1],
+                device=seq_source.device,
+            )
+            model_inputs["cache_position"] = cache_position
+
+        is_first_generation_step = cache_position[0] == 0
         if not is_first_generation_step:
-            model_inputs.pop("backbone_last_hidden_state")
+            model_inputs.pop("backbone_last_hidden_state", None)
 
         # breeze depth decoder does not use position_ids
-        model_inputs.pop("position_ids")
+        model_inputs.pop("position_ids", None)
 
         return model_inputs
 

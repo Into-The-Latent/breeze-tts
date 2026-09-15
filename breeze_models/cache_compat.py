@@ -20,7 +20,12 @@ def lazy_init_static_layer(layer, dummy_states) -> None:
 
 
 def cache_layer_kv(past_key_values, layer_idx: int):
-    """(keys, values) of one cache layer. 4.57 caches are indexable; 5.x exposes ``.layers``."""
+    """(keys, values) of one cache layer.
+
+    Both 4.57.1 and 5.x expose ``.layers``, so that is the normal path; the indexing fallback is
+    kept for older/other cache objects (4.57 caches are still indexable, plain tuple lists are not
+    ``Cache`` instances at all).
+    """
     layers = getattr(past_key_values, "layers", None)
     if layers is not None:
         layer = layers[layer_idx]

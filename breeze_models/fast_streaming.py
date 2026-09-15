@@ -54,6 +54,16 @@ class FastStreamingConfig:
             raise ValueError(f"unknown fast path stage: {stage!r}")
         return bool(getattr(self, field_name))
 
+    def any_stage_fast(self) -> bool:
+        """True when at least one stage would run through a captured CUDA graph."""
+        if self.fast_all is not None:
+            return bool(self.fast_all)
+        return any(
+            bool(getattr(self, name))
+            for name in self.__dataclass_fields__
+            if name.startswith("fast_") and name != "fast_all"
+        )
+
 
 @dataclass(frozen=True)
 class FastStreamingChunk:
@@ -163,6 +173,31 @@ def _extract_audio_np(audio: torch.Tensor) -> np.ndarray:
     return audio.detach().float().cpu().numpy()
 
 
+def require_fast_path_support(config: FastStreamingConfig) -> None:
+    """Refuse the CUDA-graph fast path on transformers >= 5.
+
+    Capture wraps transformers' StaticCache. From 5.0 on, ``StaticLayer.update`` ignores
+    ``cache_kwargs["cache_position"]`` and advances the cache from a Python counter that a replayed
+    graph never re-executes, so every decode step would be written into the same slot and the audio
+    would be silently corrupt. The eager path is unaffected.
+    """
+    if not config.any_stage_fast():
+        return
+    import transformers
+
+    version = str(transformers.__version__)
+    try:
+        major = int(version.split(".")[0])
+    except ValueError:  # pragma: no cover - unparseable dev version string
+        return
+    if major >= 5:
+        raise RuntimeError(
+            "Breeze fast streaming (CUDA graphs) needs transformers 4.57.x; this environment has "
+            f"transformers {version}, whose StaticCache advances from a Python counter that a "
+            "replayed graph never re-runs. Disable every fast_* stage (fast_all=False)."
+        )
+
+
 class FastBreezeStreamingRuntime:
     def __init__(
         self,
@@ -176,6 +211,7 @@ class FastBreezeStreamingRuntime:
         self.audio_tokenizer = audio_tokenizer
         self.tokenizer = tokenizer
         self.config = config or FastStreamingConfig()
+        require_fast_path_support(self.config)
         self._fast_text_encoder = self.config.stage_fast("text_encoder")
         self._fast_backbone_prefill = self.config.stage_fast("backbone_prefill")
         self._fast_backbone_decode = self.config.stage_fast("backbone_decode")

@@ -266,6 +266,11 @@ class Qwen3TTSTokenizerV2ConvNeXtBlock(nn.Module):
 class Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
 
+    # Upstream's "Rotatory" spelling (not "Rotary") is what keeps this class out of transformers 5's
+    # `_init_weights` rotary branch, which would call `compute_default_rope_parameters` on it. It is
+    # also why buffer_compat has to recompute `inv_freq` here after from_pretrained. The spelling is
+    # vendored verbatim from upstream Qwen3-TTS and is kept on purpose.
+
     def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
