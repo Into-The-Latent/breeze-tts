@@ -94,7 +94,7 @@ def load_runtime(
     )
     model.to(device).eval()
 
-    from qwen_tts import Qwen3TTSTokenizer
+    from breeze_models.qwen_tokenizer import Qwen3TTSTokenizer
 
     bundled_audio_tokenizer = ckpt_dir / "audio_tokenizer"
     if not bundled_audio_tokenizer.is_dir():

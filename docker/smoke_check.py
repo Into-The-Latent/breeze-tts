@@ -10,7 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import flash_attn
-import qwen_tts
 import torch
 import transformers
 
@@ -20,13 +19,12 @@ from breeze_models.warmup_profile import load_warmup_profile
 EXPECTED = {
     "torch": "2.9.1",
     "transformers": "4.57.3",
-    "qwen-tts": "0.1.1",
     "flash-attn": "2.8.3",
 }
 
 
 def main() -> None:
-    imported_modules = (flash_attn, qwen_tts, torch, transformers)
+    imported_modules = (flash_attn, torch, transformers)
     if not all(imported_modules):
         raise RuntimeError("one or more required modules failed to import")
     versions = {name: importlib.metadata.version(name) for name in EXPECTED}
