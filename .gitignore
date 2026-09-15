@@ -17,3 +17,7 @@ htmlcov/
 .env.*
 !.env.example
 
+
+# pip / setuptools build artifacts (editable installs)
+build/
+*.egg-info/

@@ -2,7 +2,7 @@
 > usable inside an existing ComfyUI environment:
 > - the `models` package is renamed to `breeze_models` (no collision with ComfyUI's own `models`)
 > - transformers 5.x is supported alongside 4.57.x (tested end-to-end: torch 2.11 + transformers 5.15; compat shims in `breeze_models/*_compat.py`; the CUDA-graph fast path needs 4.57.x)
-> - dependency pins are loosened; install with `pip install git+https://github.com/Into-The-Latent/breeze-tts@feature/comfyui`
+> - dependency pins are loosened; `torch` has no version floor (pip never replaces the host's torch build; the floor, torch >= 2.3, is checked at import) and the unused `torchaudio` is dropped; install with `pip install git+https://github.com/Into-The-Latent/breeze-tts@feature/comfyui`
 > - the Qwen3-TTS 12 Hz audio tokenizer code is vendored (`breeze_models/qwen_tokenizer`), so `qwen-tts` and its transformers 4.57.3 pin are not needed
 >
 > Everything else is upstream: https://github.com/breezeblue-ai/breeze-tts
