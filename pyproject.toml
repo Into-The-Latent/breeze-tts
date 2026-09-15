@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breeze-tts"
-version = "2.0.0.post5"
+version = "2.0.0.post6"
 description = "Breeze TTS 2 inference (Into The Latent fork: pip-installable, transformers 5 compatible, ComfyUI-safe package name)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
     # torch is deliberately left without a version floor: a floor makes pip replace the host's torch
-    # (a ComfyUI venv on Windows then gets the CPU-only wheel from PyPI). breeze_infer checks the
+    # (a ComfyUI venv on Windows then gets the CPU-only wheel from PyPI). breeze_models checks the
     # floor at import time instead. torchaudio is not used by this package.
     "torch",
     "transformers>=4.57,<6",

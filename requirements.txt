@@ -2,7 +2,7 @@
 # torch / transformers install (e.g. a ComfyUI venv). Tested with
 # torch 2.11 + transformers 5.15 and upstream's torch 2.9.1 + transformers 4.57.3.
 # torch has no version floor on purpose: a floor makes pip replace the host's torch build
-# (on Windows PyPI only has CPU-only torch wheels). breeze_infer checks the floor at import.
+# (on Windows PyPI only has CPU-only torch wheels). breeze_models checks the floor at import.
 # torchaudio is not used and is not listed.
 torch
 transformers>=4.57,<6
