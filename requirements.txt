@@ -1,10 +1,12 @@
 # Loosened from upstream's exact pins so this can coexist with an existing
 # torch / transformers install (e.g. a ComfyUI venv). Tested with
 # torch 2.11 + transformers 5.15 and upstream's torch 2.9.1 + transformers 4.57.3.
-torch>=2.9
-torchaudio>=2.9
+# torch has no version floor on purpose: a floor makes pip replace the host's torch build
+# (on Windows PyPI only has CPU-only torch wheels). breeze_models checks the floor at import.
+# torchaudio is not used and is not listed.
+torch
 transformers>=4.57,<6
-numpy>=2.0
+numpy>=1.25
 soundfile>=0.13
 librosa>=0.10
 fastapi>=0.115
