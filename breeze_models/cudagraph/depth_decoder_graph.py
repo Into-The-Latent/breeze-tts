@@ -32,7 +32,9 @@ import torch
 import torch._dynamo
 import torch.nn.functional as F
 from transformers import StaticCache
-from transformers.masking_utils import create_causal_mask
+
+from ..cache_compat import lazy_init_static_layer
+from ..mask_compat import create_causal_mask
 
 from ..logits_process import mask_invalid_codec_token_logits
 
@@ -459,7 +461,7 @@ class DepthDecoderGraph:
         )
         for layer in self.static_cache.layers:
             if not layer.is_initialized:
-                layer.lazy_initialization(dummy_k)
+                lazy_init_static_layer(layer, dummy_k)
 
     def _make_attn_mask(self, input_embeds, cache_position):
         return create_causal_mask(

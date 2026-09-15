@@ -668,19 +668,29 @@ class T5Gemma2TextEncoder(PreTrainedModel):
         return new_embeddings
 
     def _init_weights(self, module):
+        # transformers >= 5 marks parameters it has loaded with `_is_hf_initialized` and still calls
+        # this hook for a module whose non-persistent buffers need recomputing (embed_scale below).
+        # Raw `.data.normal_()` would overwrite the loaded weights, so every write is guarded.
+        def fresh(tensor):
+            return tensor is not None and not getattr(tensor, "_is_hf_initialized", False)
+
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.bias is not None:
+            if fresh(module.weight):
+                module.weight.data.normal_(mean=0.0, std=std)
+            if fresh(module.bias):
                 module.bias.data.zero_()
         elif isinstance(module, T5Gemma2TextScaledWordEmbedding):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
-            module.eoi_embedding.data.zero_()
+            if fresh(module.weight):
+                module.weight.data.normal_(mean=0.0, std=std)
+                if module.padding_idx is not None:
+                    module.weight.data[module.padding_idx].zero_()
+            if fresh(module.eoi_embedding):
+                module.eoi_embedding.data.zero_()
             module.embed_scale.fill_(module.scalar_embed_scale)
         elif isinstance(module, T5Gemma2RMSNorm):
-            module.weight.data.zero_()
+            if fresh(module.weight):
+                module.weight.data.zero_()
 
     @staticmethod
     def _build_additive_attention_mask(

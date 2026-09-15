@@ -27,7 +27,7 @@ from transformers import MimiConfig, MimiModel
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.integrations import use_kernel_forward_from_hub
-from transformers.masking_utils import (
+from ..mask_compat import (  # transformers 4.57/5.x compatible wrappers
     create_causal_mask,
     create_sliding_window_causal_mask,
 )
@@ -35,6 +35,7 @@ from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from ..rope_compat import resolve_rope_init_fn
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import ModelOutput, auto_docstring, logging
@@ -44,11 +45,17 @@ def check_model_inputs(func=None):  # noqa: D401 — name kept so the diff vs up
     factory with the plain `merge_with_config_defaults` decorator; 4.57 still has the factory."""
     try:
         from transformers.utils.generic import merge_with_config_defaults as _decorate
-    except ImportError:  # transformers 4.57.x
-        from transformers.utils.generic import check_model_inputs as _factory
+    except ImportError:  # transformers 4.57.x: plain decorator in 4.57.0/1, factory in 4.57.3
+        import inspect
 
-        def _decorate(f):
-            return _factory()(f)
+        from transformers.utils.generic import check_model_inputs as _legacy
+
+        _params = inspect.signature(_legacy).parameters
+        if "func" in _params and _params["func"].default is inspect.Parameter.empty:
+            _decorate = _legacy
+        else:
+            def _decorate(f):
+                return _legacy()(f)
 
     if func is None:
         return _decorate
@@ -270,7 +277,7 @@ class Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        self.rope_init_fn = resolve_rope_init_fn(self.rope_type)
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)

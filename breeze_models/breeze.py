@@ -27,13 +27,14 @@ from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.integrations import use_kernel_forward_from_hub
-from transformers.masking_utils import create_causal_mask
+from .mask_compat import create_causal_mask
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
+from .rope_compat import resolve_rope_init_fn
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.models.auto import AutoModel
 from transformers.processing_utils import Unpack
@@ -153,7 +154,7 @@ class BreezeRotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        self.rope_init_fn = resolve_rope_init_fn(self.rope_type)
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -789,6 +790,8 @@ class BreezeBackboneModelEmbeddings(nn.Module):
             )
         else:
             self.audio_embeds_projector = None
+        self.num_codebooks = config.num_codebooks
+        self.vocab_size = config.vocab_size
         self.register_buffer(
             "audio_tokens_offsets",
             torch.arange(config.num_codebooks) * config.vocab_size,
@@ -910,10 +913,11 @@ from transformers import AutoConfig, PretrainedConfig
     """
 )
 class BreezeForConditionalGeneration(BreezePreTrainedModel, BreezeGenerationMixin):
-    _tied_weights_keys = [
-        "backbone_model.embed_tokens.embed_audio_tokens.weight",
-        "depth_decoder.model.embed_tokens.weight",
-    ]
+    # transformers 5 ties from this {target: source} mapping and no longer calls _tie_weights();
+    # 4.57 only uses the keys (to silence missing-key warnings) and calls _tie_weights() below.
+    _tied_weights_keys = {
+        "backbone_model.embed_tokens.embed_audio_tokens.weight": "depth_decoder.model.embed_tokens.weight",
+    }
 
     def __init__(self, config):
         super().__init__(config)
@@ -1102,12 +1106,22 @@ class BreezeForConditionalGeneration(BreezePreTrainedModel, BreezeGenerationMixi
     def set_input_embeddings(self, value):
         self.backbone_model.embed_tokens = value
 
-    def _tie_weights(self):
+    def _tie_weights(self):  # transformers 4.x hook
         if self.config.tie_codebooks_embeddings:
             self._tie_or_clone_weights(
                 self.backbone_model.embed_tokens.embed_audio_tokens,
                 self.depth_decoder.model.embed_tokens,
             )
+
+    def get_expanded_tied_weights_keys(self, all_submodels: bool = False) -> dict:
+        # transformers >= 5 path. The base implementation gates every tie on config.tie_word_embeddings,
+        # which Breeze forbids (it would tie the text lm_head); the codebook embedding tie is governed by
+        # config.tie_codebooks_embeddings instead. Not defined on 4.x, where _tie_weights() runs.
+        if all_submodels:
+            return super().get_expanded_tied_weights_keys(all_submodels=True)
+        if getattr(self.config, "tie_codebooks_embeddings", False):
+            return dict(self._tied_weights_keys)
+        return {}
 
     @staticmethod
     def _get_nonzero_text_encoder_dropout_fields(text_encoder_config):

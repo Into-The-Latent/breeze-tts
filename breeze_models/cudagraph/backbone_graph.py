@@ -16,7 +16,9 @@ Strategy:
 
 import torch
 from transformers import StaticCache
-from transformers.masking_utils import create_causal_mask
+
+from ..cache_compat import cache_layer_kv, lazy_init_static_layer
+from ..mask_compat import create_causal_mask
 
 
 class BackboneGraph:
@@ -196,7 +198,7 @@ class BackboneGraph:
         )
         for layer in self.static_cache.layers:
             if not layer.is_initialized:
-                layer.lazy_initialization(dummy_k)
+                lazy_init_static_layer(layer, dummy_k)
 
     def _build_initial_attention_mask(self):
         """Build a default causal mask (no padding) for graph capture/warmup.
@@ -340,7 +342,7 @@ class BackboneGraph:
         self.static_cache.reset()
         seq_len = 0
         for li in range(self.num_layers):
-            k, v = past_key_values[li]
+            k, v = cache_layer_kv(past_key_values, li)
             seq_len = k.shape[2]
             if seq_len > self.max_seq_len:
                 raise RuntimeError(

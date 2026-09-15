@@ -10,6 +10,7 @@ import torch
 from transformers import AutoTokenizer
 
 from breeze_models.breeze import BreezeForConditionalGeneration
+from breeze_models.buffer_compat import reinit_computed_buffers
 
 
 def get_dist_info() -> tuple[int, int, int]:
@@ -93,6 +94,8 @@ def load_runtime(
         attn_implementation=attn_implementation,
     )
     model.to(device).eval()
+    # transformers 5 leaves computed non-persistent buffers uninitialised after from_pretrained.
+    reinit_computed_buffers(model)
 
     from breeze_models.qwen_tokenizer import Qwen3TTSTokenizer
 
@@ -106,4 +109,5 @@ def load_runtime(
     audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(
         str(bundled_audio_tokenizer), device_map=device
     )
+    reinit_computed_buffers(getattr(audio_tokenizer, "model", None))
     return tokenizer, model, audio_tokenizer
