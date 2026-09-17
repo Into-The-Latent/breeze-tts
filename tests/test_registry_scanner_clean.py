@@ -19,9 +19,15 @@ ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = [ROOT / "breeze_models", ROOT / "breeze_infer"]
 NOT_VENDORED = {ROOT / "breeze_infer" / "api.py"}
 
+# The registry's rule files are not public: this is wider than the five hits that were reported,
+# on purpose. Network modules are matched on their import so that prose ("the json_in socket.")
+# does not trip it.
+_NET_MODULES = r"requests|httpx|aiohttp|urllib3|socket|ftplib|smtplib|telnetlib|websocket|websockets"
 FORBIDDEN = re.compile(
     r"os\.environ|os\.getenv|os\.putenv|os\.unsetenv"
-    r"|urllib\.request|urlopen|urlretrieve|http\.client|\brequests\.|\bhttpx\b|\baiohttp\b|\bsocket\."
+    r"|from\s+os\s+import\s+[^#\n]*\b(environ|environb|getenv|getenvb|putenv|unsetenv)\b"
+    r"|urllib\.request|urlopen|urlretrieve|http\.client|http\.server"
+    rf"|^\s*(import|from)\s+({_NET_MODULES})\b"
 )
 
 
