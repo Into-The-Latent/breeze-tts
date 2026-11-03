@@ -90,7 +90,8 @@ def _tiny_encoder():
 def test_no_transformers_mimi_import_is_left():
     for name in ("audio_encoder.py", "modeling_qwen3_tts_tokenizer_v2.py", "configuration_qwen3_tts_tokenizer_v2.py"):
         source = (ROOT / name).read_text(encoding="utf-8")
-        assert not re.search(r"^\s*(from|import)\s.*Mimi", source, re.MULTILINE), name
+        imports = re.findall(r"^\s*(?:from\s+\S+\s+import\s+(?:\([^)]*\)|.*)|import\s+.*)", source, re.MULTILINE)
+        assert not any("mimi" in statement.lower() for statement in imports), name
 
 
 def test_nothing_matches_the_rotary_init_branch_of_transformers_5():
@@ -236,6 +237,10 @@ def test_audio_tokenizer_survives_from_pretrained(tmp_path):
     saved = model.state_dict()
     for name, tensor in loaded.encoder.state_dict().items():
         assert torch.equal(tensor, saved[f"encoder.{name}"]), name
+    # load_runtime does this too: transformers 5 leaves the decoder's rotary buffer uninitialised.
+    from breeze_models.buffer_compat import reinit_computed_buffers
+
+    reinit_computed_buffers(loaded)
     audio = torch.randn(1, 4800, generator=torch.Generator().manual_seed(2))
     mask = torch.ones_like(audio, dtype=torch.long)
     with torch.inference_mode():

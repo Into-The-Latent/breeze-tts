@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -84,39 +85,60 @@ def test_load_runtime_does_not_swallow_other_tokenizer_type_errors(tmp_path) -> 
     load_tokenizer.assert_called_once()
 
 
-def test_tokenizer_fallback_hides_the_false_regex_warning(tmp_path):
-    """Unset, transformers 5.3 warns about incorrect tokenization on this non-Mistral tokenizer."""
-    from transformers.utils import logging as hf_logging
+def _record_tokenizer_warnings():
+    """Where transformers 5.3 logs the false warning, with a handler that keeps what gets through."""
+    logger = logging.getLogger("transformers.tokenization_utils_tokenizers")
+    records = []
 
-    seen = []
+    class Keep(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
 
+    handler = Keep()
+    logger.addHandler(handler)
+    return logger, handler, records
+
+
+def _fails_with_the_flag_then(after):
     def loader(*args, **kwargs):
-        seen.append(hf_logging.get_verbosity())
         if "fix_mistral_regex" in kwargs:
             raise TypeError("got multiple values for keyword argument 'fix_mistral_regex'")
+        return after()
+
+    return loader
+
+
+def test_tokenizer_fallback_hides_only_the_false_regex_warning(tmp_path):
+    """Unset, transformers 5.3 warns about incorrect tokenization on this non-Mistral tokenizer."""
+    logger, handler, records = _record_tokenizer_warnings()
+
+    def load():
+        logger.warning("The tokenizer you are loading from 'x' with an incorrect regex pattern: https://y")
+        logger.warning("A genuine problem with the tokenizer files")
         return MagicMock()
 
-    before = hf_logging.get_verbosity()
-    with patch("breeze_infer.runtime.AutoTokenizer.from_pretrained", loader):
-        from breeze_infer.runtime import _load_text_tokenizer
+    try:
+        with patch("breeze_infer.runtime.AutoTokenizer.from_pretrained", _fails_with_the_flag_then(load)):
+            from breeze_infer.runtime import _load_text_tokenizer
 
-        _load_text_tokenizer(tmp_path)
-    assert seen[1] == hf_logging.ERROR
-    assert hf_logging.get_verbosity() == before
+            _load_text_tokenizer(tmp_path)
+        assert records == ["A genuine problem with the tokenizer files"]
+        logger.warning("The tokenizer you are loading from 'z' with an incorrect regex pattern: https://y")
+        assert len(records) == 2  # nothing stays filtered after the load
+    finally:
+        logger.removeHandler(handler)
 
 
-def test_tokenizer_fallback_restores_verbosity_when_loading_fails(tmp_path):
-    from transformers.utils import logging as hf_logging
+def test_tokenizer_fallback_removes_its_filter_when_loading_fails(tmp_path):
+    logger = logging.getLogger("transformers.tokenization_utils_tokenizers")
+    before = list(logger.filters)
 
-    def loader(*args, **kwargs):
-        if "fix_mistral_regex" in kwargs:
-            raise TypeError("got multiple values for keyword argument 'fix_mistral_regex'")
+    def fail():
         raise OSError("broken tokenizer files")
 
-    before = hf_logging.get_verbosity()
-    with patch("breeze_infer.runtime.AutoTokenizer.from_pretrained", loader):
+    with patch("breeze_infer.runtime.AutoTokenizer.from_pretrained", _fails_with_the_flag_then(fail)):
         from breeze_infer.runtime import _load_text_tokenizer
 
         with pytest.raises(OSError):
             _load_text_tokenizer(tmp_path)
-    assert hf_logging.get_verbosity() == before
+    assert logger.filters == before
