@@ -43,10 +43,10 @@ from transformers.processing_utils import Unpack
 from transformers.utils import (
     ModelOutput,
     TransformersKwargs,
-    auto_docstring,
     can_return_tuple,
     logging,
 )
+from .docstring_compat import auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from .breeze_config import BreezeConfig, BreezeDepthDecoderConfig
@@ -1128,9 +1128,9 @@ class BreezeForConditionalGeneration(BreezePreTrainedModel, BreezeGenerationMixi
                 self.text_encoder.eval()
             for param in self.text_encoder.parameters():
                 param.requires_grad = requires_grad
-            import os
+            from .dist_info import get_rank
 
-            if os.environ.get("RANK", "0") == "0":
+            if get_rank() == 0:
                 logger.info(
                     f"model.text_encoder initialized with requires_grad={requires_grad}"
                 )
@@ -1271,9 +1271,9 @@ class BreezeForConditionalGeneration(BreezePreTrainedModel, BreezeGenerationMixi
         )
 
         # 1. disable gradient checkpointing for specified sub-modules
-        import os
+        from .dist_info import get_rank
 
-        rank = int(os.environ.get("RANK", "0"))
+        rank = get_rank()
         print0 = lambda *args, **kwargs: print(*args, **kwargs) if rank == 0 else None
         for module_name in sub_modules_to_disable:
             module = getattr(self, module_name, None)

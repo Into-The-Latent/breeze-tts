@@ -16,9 +16,7 @@
 # Vendored from qwen-tts 0.1.1 (Alibaba Qwen team, Apache-2.0) for Breeze TTS; V1 (25 Hz) tokenizer support removed.
 import base64
 import io
-import urllib.request
 from typing import List, Optional, Tuple, Union
-from urllib.parse import urlparse
 
 import librosa
 import numpy as np
@@ -67,7 +65,10 @@ class Qwen3TTSTokenizer:
                 HuggingFace repo id or local directory.
             **kwargs (Any):
                 Forwarded to `AutoModel.from_pretrained(...)` directly.
-                Typical examples: device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="eager".
+                Typical example: dtype=torch.bfloat16. attn_implementation only reaches the decoder, because the
+                encoder always uses scaled dot product attention. Do not pass device_map:
+                it needs the optional accelerate package. Load, then call `tok.model.to(device)` and set
+                `tok.device = tok.model.device`, as breeze_infer.runtime.load_runtime does.
 
         Returns:
             Qwen3TTSTokenizer:
@@ -101,11 +102,7 @@ class Qwen3TTSTokenizer:
         return False
     
     def _is_url(self, s: str) -> bool:
-        try:
-            u = urlparse(s)
-            return u.scheme in ("http", "https") and bool(u.netloc)
-        except Exception:
-            return False
+        return s.lower().startswith(("http://", "https://"))
 
     def _decode_base64_to_wav_bytes(self, b64: str) -> bytes:
         # Accept both "data:audio/wav;base64,...." and raw base64
@@ -123,7 +120,9 @@ class Qwen3TTSTokenizer:
 
         Args:
             x (str):
-                A wav file path, or a base64 audio string (raw or data URL).
+                A wav file path, or a base64 audio string (raw or data URL). http(s) URLs are
+                refused: upstream qwen-tts downloads them, this copy makes no network requests
+                (the Comfy registry flags them, see breeze_models/dist_info.py).
             target_sr (int):
                 Target sampling rate.
 
@@ -132,11 +131,10 @@ class Qwen3TTSTokenizer:
                 1-D float32 waveform at target_sr.
         """
         if self._is_url(x):
-            with urllib.request.urlopen(x) as resp:
-                audio_bytes = resp.read()
-            with io.BytesIO(audio_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
-        elif self._is_probably_base64(x):
+            raise ValueError(
+                f"Audio URLs are not supported, download the file and pass its path instead: {x}"
+            )
+        if self._is_probably_base64(x):
             wav_bytes = self._decode_base64_to_wav_bytes(x)
             with io.BytesIO(wav_bytes) as f:
                 audio, sr = sf.read(f, dtype="float32", always_2d=False)

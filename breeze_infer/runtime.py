@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import logging
 import random
 from pathlib import Path
 from typing import Any
@@ -11,12 +11,19 @@ from transformers import AutoTokenizer
 
 from breeze_models.breeze import BreezeForConditionalGeneration
 from breeze_models.buffer_compat import reinit_computed_buffers
+from breeze_models.dist_info import get_rank
 
 
 def get_dist_info() -> tuple[int, int, int]:
-    rank = int(os.environ.get("RANK", "0"))
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+    # Asks torch.distributed instead of reading RANK / WORLD_SIZE / LOCAL_RANK, because the Comfy
+    # registry flags any environment variable access (see breeze_models/dist_info.py). Without an
+    # initialised process group this is always (0, 1, 0), also under torchrun: multi process
+    # callers must initialise torch.distributed first or pass an explicit device.
+    rank = get_rank()
+    world_size = 1
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        world_size = torch.distributed.get_world_size()
+    local_rank = rank % torch.cuda.device_count() if torch.cuda.is_available() else 0
     return rank, world_size, local_rank
 
 
@@ -66,6 +73,33 @@ def update_generation_config_for_breeze(
     vars(model.generation_config).update(generation_config)
 
 
+class _HideFalseRegexWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "incorrect regex pattern" not in record.getMessage()
+
+
+def _load_text_tokenizer(ckpt_dir: Path) -> AutoTokenizer:
+    try:
+        return AutoTokenizer.from_pretrained(
+            ckpt_dir,
+            fix_mistral_regex=False,
+        )
+    except TypeError as exc:
+        # transformers 5.3.0 forwards fix_mistral_regex to _patch_mistral_regex both by name and in
+        # **kwargs, so setting it fails with "got multiple values for keyword argument". Left unset
+        # it is None there, which applies no patch either: the same tokenizer, plus a warning that
+        # this non-Mistral tokenizer would tokenize incorrectly. That warning is false, so hide it.
+        if "fix_mistral_regex" not in str(exc):
+            raise
+    logger = logging.getLogger("transformers.tokenization_utils_tokenizers")
+    false_warning = _HideFalseRegexWarning()
+    logger.addFilter(false_warning)
+    try:
+        return AutoTokenizer.from_pretrained(ckpt_dir)
+    finally:
+        logger.removeFilter(false_warning)
+
+
 def load_runtime(
     ckpt_dir: Path,
     *,
@@ -81,13 +115,9 @@ def load_runtime(
             raise RuntimeError(
                 "Failed to set CUDA device "
                 f"device={device} rank={rank} world_size={world_size} local_rank={local_rank} "
-                f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
                 f"device_count={torch.cuda.device_count()}"
             ) from exc
-    tokenizer = AutoTokenizer.from_pretrained(
-        ckpt_dir,
-        fix_mistral_regex=False,
-    )
+    tokenizer = _load_text_tokenizer(ckpt_dir)
     model = BreezeForConditionalGeneration.from_pretrained(
         ckpt_dir,
         dtype=torch.bfloat16,
@@ -106,8 +136,11 @@ def load_runtime(
             f"{bundled_audio_tokenizer}. The Breeze model package must include "
             "the audio_tokenizer directory."
         )
-    audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(
-        str(bundled_audio_tokenizer), device_map=device
-    )
+    # Load on CPU and move afterwards, like the main model above. Passing `device_map=` here makes
+    # transformers demand the optional `accelerate` package, which a fresh ComfyUI venv does not
+    # have (and accelerate carries a torch floor, which this package must never pull in).
+    audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(str(bundled_audio_tokenizer))
+    audio_tokenizer.model.to(device).eval()
+    audio_tokenizer.device = audio_tokenizer.model.device
     reinit_computed_buffers(getattr(audio_tokenizer, "model", None))
     return tokenizer, model, audio_tokenizer

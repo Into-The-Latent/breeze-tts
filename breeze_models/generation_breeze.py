@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -671,7 +670,9 @@ class BreezeGenerationMixin(GenerationMixin):
             model_kwargs, generation_config
         )
         if compile_forward:
-            os.environ["TOKENIZERS_PARALLELISM"] = "0"
+            # HF's _sample also turns TOKENIZERS_PARALLELISM off here. Left out on purpose: the
+            # Comfy registry flags environment writes (see breeze_models/dist_info.py), and
+            # tokenizers disables its own parallelism (with a warning) if the process ever forks.
             model_forward = self.get_compiled_call(generation_config.compile_config)
 
         is_prefill = True
@@ -1196,7 +1197,7 @@ class BreezeGenerationMixin(GenerationMixin):
         ...     return_dict=True,
         ... ).to(torch_device)
 
-        >>> model = BreezeForConditionalGeneration.from_pretrained(model_id, device_map=torch_device)
+        >>> model = BreezeForConditionalGeneration.from_pretrained(model_id).to(torch_device)
         >>> audio = model.generate(**inputs, output_audio=True)
         >>> processor.save_audio(audio, "output.wav")
         ```
