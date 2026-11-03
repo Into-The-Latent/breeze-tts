@@ -15,7 +15,22 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1] / "breeze_models" / "qwen_tokenizer"
 
-# Sizes only; everything else comes from the same values the Breeze checkpoint's config.json has.
+# The Breeze checkpoint's audio_tokenizer/config.json, encoder_config section, verbatim.
+CHECKPOINT_ENCODER_CONFIG = {
+    "_frame_rate": 12.5, "attention_bias": False, "attention_dropout": 0.0, "audio_channels": 1,
+    "codebook_dim": 256, "codebook_size": 2048, "compress": 2, "dilation_growth_rate": 2, "dtype": "float32",
+    "head_dim": 64, "hidden_act": "gelu", "hidden_size": 512, "initializer_range": 0.02,
+    "intermediate_size": 2048, "kernel_size": 7, "last_kernel_size": 3, "layer_scale_initial_scale": 0.01,
+    "max_position_embeddings": 8000, "norm_eps": 1e-05, "normalize": False, "num_attention_heads": 8,
+    "num_filters": 64, "num_hidden_layers": 8, "num_key_value_heads": 8, "num_quantizers": 32,
+    "num_residual_layers": 1, "num_semantic_quantizers": 1, "pad_mode": "constant", "residual_kernel_size": 3,
+    "rope_theta": 10000.0, "sampling_rate": 24000, "sliding_window": 250, "transformers_version": "4.57.0.dev0",
+    "trim_right_ratio": 1.0, "upsample_groups": 512, "upsampling_ratios": [8, 6, 5, 4], "use_cache": False,
+    "use_causal_conv": True, "use_conv_shortcut": False, "use_streaming": False,
+    "vector_quantization_hidden_dimension": 256,
+}
+
+# A small model for the tests that run it. Sizes are reduced, the settings match the checkpoint.
 TINY = dict(
     hidden_size=32,
     intermediate_size=64,
@@ -44,7 +59,7 @@ TINY = dict(
     pad_mode="constant",
     hidden_act="gelu",
     norm_eps=1e-5,
-    layer_scale_initial_scale=0.01,
+    layer_scale_initial_scale=1.0,  # the checkpoint's 0.01 hides attention bugs from a random tiny model
     attention_bias=False,
     attention_dropout=0.0,
 )
@@ -84,12 +99,38 @@ def test_nothing_matches_the_rotary_init_branch_of_transformers_5():
 
 
 def test_config_reads_the_breeze_checkpoint_encoder_section():
-    config = _tiny_encoder_config()
+    from breeze_models.qwen_tokenizer.audio_encoder import Qwen3TTSAudioEncoder
+    from breeze_models.qwen_tokenizer.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2EncoderConfig,
+    )
+
+    config = Qwen3TTSTokenizerV2EncoderConfig(**CHECKPOINT_ENCODER_CONFIG)
     assert config.frame_rate == 12.5
     assert config.encodec_frame_rate == 25  # ceil(24000 / (8 * 6 * 5 * 4))
-    encoder = _tiny_encoder()
+    assert config.sliding_window == 250
+    encoder = Qwen3TTSAudioEncoder(config)
     assert encoder.downsample.conv.kernel_size == (4,)
     assert encoder.downsample.conv.stride == (2,)
+
+
+def test_each_frame_sees_only_the_sliding_window():
+    """With one layer, a change in frame 0 reaches frames below the window and no frame beyond it."""
+    from breeze_models.qwen_tokenizer.audio_encoder import _Transformer
+    from breeze_models.qwen_tokenizer.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2EncoderConfig,
+    )
+
+    window = TINY["sliding_window"]
+    config = Qwen3TTSTokenizerV2EncoderConfig(**{**TINY, "num_hidden_layers": 1}, _frame_rate=12.5, rope_theta=10000.0)
+    torch.manual_seed(3)
+    transformer = _Transformer(config).eval()
+    frames = torch.randn(1, window + 4, TINY["hidden_size"])
+    changed = frames.clone()
+    changed[:, 0] += 1.0
+    with torch.inference_mode():
+        before, after = transformer(frames), transformer(changed)
+    assert not torch.equal(before[:, window - 1], after[:, window - 1])
+    assert torch.equal(before[:, window:], after[:, window:])
 
 
 def test_state_dict_uses_the_checkpoint_names():
@@ -128,6 +169,7 @@ def _transformers_mimi_parts(model):
 @pytest.mark.parametrize("samples", [1920, 12345, 24000, 48001])
 def test_codes_match_transformers_mimi_exactly(attn, samples):
     """Our copy must stay numerically identical to the code the checkpoint was made for."""
+    import transformers
     from transformers import MimiConfig, MimiModel
 
     config = MimiConfig(**TINY, frame_rate=12.5, use_cache=False, upsample_groups=TINY["hidden_size"],
@@ -136,13 +178,24 @@ def test_codes_match_transformers_mimi_exactly(attn, samples):
     reference = MimiModel(config).eval()
     parts = _transformers_mimi_parts(reference)
     if parts is None:
-        pytest.skip("transformers changed its Mimi layout again; the checkpoint check still covers us")
+        pytest.skip("transformers changed its Mimi layout: this comparison no longer runs, "
+                    "so compare the codes on the real checkpoint by hand before releasing")
     ours = _tiny_encoder()
+    if transformers.__version__.startswith("4."):
+        # transformers 4 ignores sliding_window and always uses the full context. Compare everything
+        # else; the window has its own test above. See the module docstring of audio_encoder.py.
+        ours.encoder_transformer.sliding_window = 10**9
     seanet, transformer, downsample, quantizer = parts
     seanet.load_state_dict(ours.encoder.state_dict())
     transformer.load_state_dict(ours.encoder_transformer.state_dict())
     downsample.load_state_dict(ours.downsample.state_dict())
     quantizer.load_state_dict(ours.quantizer.state_dict())
+
+    # Codes are rounded to the nearest codebook entry and hide small numeric differences, so compare
+    # the attention stack's raw output as well.
+    frames = torch.randn(1, 12, TINY["hidden_size"], generator=torch.Generator().manual_seed(samples))
+    with torch.inference_mode():
+        assert torch.allclose(ours.encoder_transformer(frames), transformer(frames)[0], atol=1e-5)
 
     audio = torch.randn(1, 1, samples, generator=torch.Generator().manual_seed(samples))
     with torch.inference_mode():
