@@ -6,6 +6,11 @@ def test_vendored_tokenizer_imports_without_qwen_tts(monkeypatch):
     monkeypatch.setitem(sys.modules, "qwen_tts", None)  # make `import qwen_tts` raise ImportError
     for name in [m for m in list(sys.modules) if m.startswith("breeze_models.qwen_tokenizer")]:
         monkeypatch.delitem(sys.modules, name)
+    # The parent package keeps its own reference; without restoring it too, the fresh copy imported
+    # below would stay reachable as `breeze_models.qwen_tokenizer` for every later test.
+    import breeze_models
+
+    monkeypatch.delattr(breeze_models, "qwen_tokenizer", raising=False)
     from breeze_models.qwen_tokenizer import (
         Qwen3TTSTokenizer,
         Qwen3TTSTokenizerV2Config,

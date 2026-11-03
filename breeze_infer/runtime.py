@@ -105,7 +105,7 @@ def load_runtime(
                 f"device_count={torch.cuda.device_count()}"
             ) from exc
     tokenizer = _load_text_tokenizer(ckpt_dir)
-    model =BreezeForConditionalGeneration.from_pretrained(
+    model = BreezeForConditionalGeneration.from_pretrained(
         ckpt_dir,
         dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
