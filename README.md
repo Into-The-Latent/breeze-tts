@@ -1,7 +1,7 @@
 > **Into The Latent fork.** This fork makes the upstream code pip-installable and
 > usable inside an existing ComfyUI environment:
 > - the `models` package is renamed to `breeze_models` (no collision with ComfyUI's own `models`)
-> - transformers 5.x is supported alongside 4.57.x (tested end-to-end: torch 2.11 + transformers 5.15; compat shims in `breeze_models/*_compat.py`; the CUDA-graph fast path needs 4.57.x)
+> - transformers 5.x is supported alongside 4.57.x (tested end-to-end: torch 2.11 + transformers 5.15; compat shims in `breeze_models/*_compat.py`; the CUDA-graph fast path runs on 5.3 and 5.15 too, see [Fast Inference Options](#-fast-inference-options))
 > - dependency pins are loosened; `torch` has no version floor (pip never replaces the host's torch build; the floor, torch >= 2.7, is checked at import) and the unused `torchaudio` is dropped; install with `pip install git+https://github.com/Into-The-Latent/breeze-tts@feature/comfyui`
 > - the Qwen3-TTS 12 Hz audio tokenizer code is vendored (`breeze_models/qwen_tokenizer`), so `qwen-tts` and its transformers 4.57.3 pin are not needed
 >
@@ -186,6 +186,28 @@ Both the CLI and API use eager streaming by default and skip graph warmup. Pass 
 | Codec | `--[no-]fast-codec` | Eager streaming decode | Single-request streaming CUDA Graph with one-frame chunks |
 
 Individual stage flags are intended for profiling and debugging.
+
+**Fork additions.** `FastStreamingConfig` has two more switches, both on by default as upstream behaves:
+
+- `compile_modules=False` captures the depth decoder and codec graphs without `torch.compile`. No compiler is
+  needed, the first request starts minutes sooner, and with `fast_backbone_decode`, `fast_depth_decoder` and
+  `fast_codec` the sampled tokens are identical to the eager path for the same seed. Compiled kernels are a
+  little faster and round differently, so they give another take. `fast_text_encoder` and
+  `fast_backbone_prefill` also give another take, with or without compiling.
+- `cudnn_benchmark=False` leaves the process-wide `cudnn.benchmark` flag alone. On, the fast codec's first
+  request takes about 18 GiB of extra GPU memory for a moment and about 30 s longer.
+
+Measured on an RTX 5090 on Windows (torch 2.11, transformers 5.15), voice direction with CFG, an 18 s clip:
+eager 9.6 s of work per second of speech, the three stages above without compiling 0.53 to 0.57 s, at the same
+8.5 GiB peak, under the native allocator and under cudaMallocAsync. The first request after loading takes about
+7 s longer for the captures.
+
+All graphs are warmed up and captured on one stream, PyTorch's default capture stream
+(`breeze_models/capture_stream.py`). With streams of their own they replayed into an illegal memory access under
+the cudaMallocAsync allocator, which ComfyUI switches on by default.
+
+The fast path is refused only where a replayed graph could not move transformers' `StaticCache` on to its next
+slot (`static_cache_advances_on_device` in `breeze_models/fast_streaming.py`), not by version number.
 
 
 ## License and Responsible Use
