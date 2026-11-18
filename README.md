@@ -198,8 +198,13 @@ Individual stage flags are intended for profiling and debugging.
   request takes about 18 GiB of extra GPU memory for a moment and about 30 s longer.
 
 Measured on an RTX 5090 on Windows (torch 2.11, transformers 5.15), voice direction with CFG, an 18 s clip:
-eager 9.6 s of work per second of speech, the three stages above without compiling 0.57 s, at the same
-8.5 GiB peak. The first request after loading takes about 14 s longer for the captures.
+eager 9.6 s of work per second of speech, the three stages above without compiling 0.53 to 0.57 s, at the same
+8.5 GiB peak, under the native allocator and under cudaMallocAsync. The first request after loading takes about
+7 s longer for the captures.
+
+All graphs are warmed up and captured on one stream, PyTorch's default capture stream
+(`breeze_models/capture_stream.py`). With streams of their own they replayed into an illegal memory access under
+the cudaMallocAsync allocator, which ComfyUI switches on by default.
 
 The fast path is refused only where a replayed graph could not move transformers' `StaticCache` on to its next
 slot (`static_cache_advances_on_device` in `breeze_models/fast_streaming.py`), not by version number.

@@ -208,3 +208,30 @@ def test_single_cfg_merges_cond_and_uncond_in_one_batched_text_path() -> None:
 
     assert eager_branch.branch_batch_size == 2
     assert len(runtime.model.calls) == 2
+
+
+def test_every_graph_is_captured_on_the_one_shared_stream() -> None:
+    """Under the cudaMallocAsync allocator (ComfyUI's default) a graph replays into an illegal memory
+    access once a second graph was warmed up or captured on another stream. So no module makes a
+    stream of its own, and every capture names the shared one."""
+    import re
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parent.parent / "breeze_models"
+    for source in package.rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        if source.name != "capture_stream.py":
+            assert "torch.cuda.Stream(" not in text, f"{source.name} makes a stream of its own"
+        for call in re.findall(r"torch\.cuda\.graph\((.*?)\):", text, flags=re.S):
+            assert "stream=" in call, f"{source.name} captures a graph without naming the stream"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_the_shared_stream_is_pytorchs_default_capture_stream() -> None:
+    """So a capture that names no stream lands on the same one."""
+    from breeze_models.capture_stream import capture_stream
+
+    stream = capture_stream("cuda:0")
+    assert capture_stream(torch.device("cuda:0")) is stream
+    if torch.cuda.current_device() == 0:
+        assert torch.cuda.graph.default_capture_stream is stream
