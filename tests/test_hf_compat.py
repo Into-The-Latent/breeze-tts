@@ -414,16 +414,67 @@ def test_reinit_preserves_float32_inv_freq_on_a_real_rotary():
     assert rotary.original_inv_freq.device.type == rotary.inv_freq.device.type
 
 
-def test_fast_path_gate_refuses_cuda_graphs_on_transformers_5(monkeypatch):
-    """Blind spot: 5's StaticLayer.update ignores cache_position, so graph replay corrupts audio."""
+def test_depth_decoder_graph_is_only_compiled_when_asked(monkeypatch):
+    """compile=False keeps the eager kernels, so the captured graph samples what the eager loop
+    samples. The long warmup is there for compiled kernels only."""
+    from breeze_models.breeze import BreezeDepthDecoderForCausalLM
+    from breeze_models.cudagraph import depth_decoder_graph as module
+
+    compiled = []
+    monkeypatch.setattr(module.torch, "compile", lambda target, **kwargs: compiled.append(target) or target)
+
+    def graph(**flags):
+        config = _tiny_depth_decoder_config()
+        return module.DepthDecoderGraph(BreezeDepthDecoderForCausalLM(config), config, device="cpu",
+                                        dtype=torch.float32, batch_size=2, **flags)
+
+    assert graph(fast=True, compile=False).compiled is False
+    assert graph(fast=False).compiled is False
+    assert compiled == []
+    assert graph(fast=True).compiled is True
+    assert compiled  # layers, norm and head
+
+
+class _LayerWithPythonCounter:
+    """A StaticLayer that keeps its write position as a Python number: a replayed graph cannot move it."""
+
+    def __init__(self, max_cache_len):
+        self.cumulative_length = 0
+
+    def update(self, key_states, value_states, *args, **kwargs):
+        raise NotImplementedError
+
+
+class _LayerWithTensorCounter(_LayerWithPythonCounter):
+    """transformers 5.15: the position is a tensor that update() advances in place."""
+
+    def __init__(self, max_cache_len):
+        self.cumulative_length = torch.tensor(0)
+
+
+class _LayerWithExplicitPosition:
+    """transformers 4.57 and 5.3: update() writes where cache_kwargs["cache_position"] says."""
+
+    def __init__(self, max_cache_len):
+        pass
+
+    def update(self, key_states, value_states, cache_kwargs=None):
+        raise NotImplementedError
+
+
+def test_fast_path_gate_refuses_cuda_graphs_when_the_cache_counts_in_python(monkeypatch):
+    """A graph replay never re-runs Python, so every step would be written into the same slot."""
     import transformers
     from breeze_models.fast_streaming import (
         FastBreezeStreamingRuntime,
         FastStreamingConfig,
         require_fast_path_support,
+        static_cache_advances_on_device,
     )
 
-    monkeypatch.setattr(transformers, "__version__", "5.15.0")
+    monkeypatch.setattr(transformers.cache_utils, "StaticLayer", _LayerWithPythonCounter)
+    monkeypatch.setattr(transformers, "__version__", "5.9.9")
+    assert not static_cache_advances_on_device()
     for config in (FastStreamingConfig(fast_all=True), FastStreamingConfig(fast_depth_decoder=True)):
         assert config.any_stage_fast()
         try:
@@ -435,12 +486,53 @@ def test_fast_path_gate_refuses_cuda_graphs_on_transformers_5(monkeypatch):
         try:
             FastBreezeStreamingRuntime(_gate_stub_model(), None, config)
         except RuntimeError as e:
-            assert "5.15.0" in str(e)
+            assert "5.9.9" in str(e)
         else:
             raise AssertionError("expected RuntimeError from __init__")
 
 
-def test_fast_path_gate_is_a_no_op_on_4_57_and_for_the_eager_path(monkeypatch):
+def test_fast_path_gate_passes_where_a_replay_moves_the_cache_on(monkeypatch):
+    """Both ways transformers has written a StaticCache so far: an explicit position, and a counter
+    held as a tensor. Neither is refused, whatever the version number says."""
+    import transformers
+    from breeze_models.fast_streaming import (
+        FastStreamingConfig,
+        require_fast_path_support,
+        static_cache_advances_on_device,
+    )
+
+    monkeypatch.setattr(transformers, "__version__", "5.15.0")
+    for layer in (_LayerWithExplicitPosition, _LayerWithTensorCounter):
+        monkeypatch.setattr(transformers.cache_utils, "StaticLayer", layer)
+        assert static_cache_advances_on_device()
+        require_fast_path_support(FastStreamingConfig(fast_all=True))
+        require_fast_path_support(FastStreamingConfig(fast_backbone_decode=True))
+
+
+def test_installed_transformers_moves_the_static_cache_without_python():
+    """The real StaticLayer of this environment, as the decode graphs use it: one key at a time.
+    Wherever update() takes no position, its own counter must be one tensor that is changed in place,
+    since a captured graph holds on to that tensor."""
+    from transformers.cache_utils import StaticLayer
+
+    from breeze_models.fast_streaming import static_cache_advances_on_device
+
+    assert static_cache_advances_on_device()
+    layer = StaticLayer(max_cache_len=4)
+    lazy_init_static_layer(layer, torch.zeros(1, 1, 1, 2))
+    explicit = "cache_kwargs" in inspect.signature(StaticLayer.update).parameters
+    counter = None if explicit else layer.cumulative_length
+    for slot in range(3):
+        states = torch.full((1, 1, 1, 2), float(slot + 1))
+        if explicit:
+            layer.update(states, states, {"cache_position": torch.tensor([slot])})
+        else:
+            layer.update(states, states)
+            assert layer.cumulative_length is counter and int(counter) == slot + 1
+    assert layer.keys[0, 0, :, 0].tolist() == [1.0, 2.0, 3.0, 0.0]
+
+
+def test_fast_path_gate_is_a_no_op_for_the_eager_path(monkeypatch):
     import transformers
     from breeze_models.fast_streaming import (
         FastBreezeStreamingRuntime,
@@ -448,10 +540,7 @@ def test_fast_path_gate_is_a_no_op_on_4_57_and_for_the_eager_path(monkeypatch):
         require_fast_path_support,
     )
 
-    monkeypatch.setattr(transformers, "__version__", "4.57.1")
-    require_fast_path_support(FastStreamingConfig(fast_all=True))  # 4.57: the fast path is fine
-
-    monkeypatch.setattr(transformers, "__version__", "5.15.0")
+    monkeypatch.setattr(transformers.cache_utils, "StaticLayer", _LayerWithPythonCounter)
     for config in (FastStreamingConfig(), FastStreamingConfig(fast_all=False),
                    FastStreamingConfig(fast_all=False, fast_depth_decoder=True)):
         assert not config.any_stage_fast()

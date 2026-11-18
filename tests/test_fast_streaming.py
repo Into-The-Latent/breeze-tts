@@ -59,6 +59,35 @@ def test_fast_streaming_exposes_master_and_one_switch_per_stage() -> None:
     assert all(getattr(config, name) is False for name in fast_fields[1:])
 
 
+def test_compiling_and_cudnn_benchmark_are_on_as_upstream_and_can_be_switched_off() -> None:
+    assert FastStreamingConfig().compile_modules is True
+    assert FastStreamingConfig().cudnn_benchmark is True
+    plain = FastStreamingConfig(fast_codec=True, compile_modules=False, cudnn_benchmark=False)
+    assert plain.any_stage_fast()  # neither switch is a stage
+
+
+def test_codec_runtime_leaves_cudnn_benchmark_and_the_snakes_alone_when_told(monkeypatch) -> None:
+    """Both are process-wide side effects of the fast codec: cudnn.benchmark is a global flag, and
+    compiling rewrites the decoder's Snake modules. Switched off, neither happens."""
+    from breeze_models.stream_runtime.stream import runtime as codec_runtime
+
+    compiled = []
+    monkeypatch.setattr(codec_runtime.torch, "compile", lambda fn, **kwargs: compiled.append(fn) or fn)
+    snake = type("SnakeBeta", (torch.nn.Module,), {"forward": lambda self, x: x})()
+    decoder = torch.nn.Sequential(snake)
+
+    def runtime_with(**switches):
+        runtime = object.__new__(codec_runtime.MultiRequestStreamRuntime)
+        runtime.config = codec_runtime.QwenStreamRuntimeConfig(fast=True, **switches)
+        runtime.tokenizer = SimpleNamespace(model=SimpleNamespace(decoder=decoder))
+        return runtime
+
+    runtime_with(compile_snakes=False)._compile_snakes()
+    assert compiled == []
+    runtime_with()._compile_snakes()
+    assert len(compiled) == 1
+
+
 def test_fast_streaming_master_switch_overrides_stage_switches() -> None:
     all_eager = FastStreamingConfig(fast_all=False)
     all_fast = FastStreamingConfig(fast_all=True, fast_codec=False)
